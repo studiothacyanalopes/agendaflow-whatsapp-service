@@ -226,9 +226,13 @@ function setTimeOnDate(date, hhmm) {
   return d;
 }
 
+const APP_TIMEZONE = process.env.APP_TIMEZONE || "America/Sao_Paulo";
+
 function formatDateBR(value) {
   const date = new Date(value);
-  return date.toLocaleDateString("pt-BR");
+  return date.toLocaleDateString("pt-BR", {
+    timeZone: APP_TIMEZONE,
+  });
 }
 
 function formatTimeBR(value) {
@@ -236,6 +240,7 @@ function formatTimeBR(value) {
   return date.toLocaleTimeString("pt-BR", {
     hour: "2-digit",
     minute: "2-digit",
+    timeZone: APP_TIMEZONE,
   });
 }
 
