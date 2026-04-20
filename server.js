@@ -1468,7 +1468,9 @@ async function processAutomationForCompany(companyId) {
     );
 
 const template1h = templates.find(
-  (item) => item.template_type === "lembrete_1h" && item.is_enabled
+  (item) =>
+    ["reminder_1h", "lembrete_1h", "1h"].includes(String(item.template_type || "")) &&
+    item.is_enabled
 );
 
     const templateCompleted = templates.find(
@@ -2159,7 +2161,18 @@ async function createWhatsappClient(companyId) {
   clients.set(sessionKey, client);
 
   try {
+    console.log("INICIANDO CLIENTE WHATSAPP:", {
+      companyId,
+      sessionKey,
+    });
+
     await client.initialize();
+
+    console.log("CLIENTE INITIALIZE CHAMADO COM SUCESSO:", {
+      companyId,
+      sessionKey,
+    });
+
     return client;
   } catch (error) {
     clients.delete(sessionKey);
@@ -2219,14 +2232,23 @@ async function restoreConnectedSessions() {
 app.post("/connect/:companyId", async (req, res) => {
   try {
     const { companyId } = req.params;
-    await createWhatsappClient(companyId);
+
+    console.log("CONNECT REQUEST RECEBIDO:", { companyId });
+
+    const client = await createWhatsappClient(companyId);
+
+    console.log("CONNECT REQUEST RESULTADO:", {
+      companyId,
+      hasClient: !!client,
+    });
 
     return res.json({
       success: true,
       message: "Inicialização da sessão iniciada.",
     });
   } catch (error) {
-    console.error(error);
+    console.error("ERRO /connect:", error);
+
     return res.status(500).json({
       success: false,
       message: "Erro ao iniciar sessão do WhatsApp.",
