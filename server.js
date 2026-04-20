@@ -678,22 +678,24 @@ async function findClientByPhone(companyId, phone) {
 }
 
 async function getAppointmentsBetween(companyId, fromDate, toDate) {
-  const { data, error } = await supabase
-    .from("appointments")
-    .select(`
-      id,
-      client_id,
-      professional_id,
-      service_id,
-      start_at,
-      end_at,
-      status,
-      amount
-    `)
-    .eq("company_id", companyId)
-    .gte("start_at", fromDate.toISOString())
-    .lte("start_at", toDate.toISOString())
-    .order("start_at", { ascending: true });
+const { data, error } = await supabase
+  .from("appointments")
+  .select(`
+    id,
+    client_id,
+    professional_id,
+    service_id,
+    start_at,
+    end_at,
+    status,
+    amount,
+    created_at,
+    updated_at
+  `)
+  .eq("company_id", companyId)
+  .gte("start_at", fromDate.toISOString())
+  .lte("start_at", toDate.toISOString())
+  .order("start_at", { ascending: true });
 
   if (error) {
     console.error("Erro ao buscar appointments:", error.message);
@@ -1506,28 +1508,50 @@ const template1h = templates.find(
       "{valor_agendamento}": String(appointment.amount || ""),
     };
 
+const createdAtMs = appointment.created_at
+  ? new Date(appointment.created_at).getTime()
+  : 0;
+
+const updatedAtMs = appointment.updated_at
+  ? new Date(appointment.updated_at).getTime()
+  : 0;
+
+const appointmentChangedRecently =
+  (createdAtMs && Date.now() - createdAtMs <= 15 * 60 * 1000) ||
+  (updatedAtMs && Date.now() - updatedAtMs <= 15 * 60 * 1000);
+
 if (
   templateConfirmation &&
   settings.send_confirmation &&
   ["scheduled", "confirmed"].includes(String(appointment.status || "")) &&
-  minutesDiff >= -15
+  minutesDiff >= -15 &&
+  appointmentChangedRecently
 ) {
+
   const content = fillTemplate(
     templateConfirmation.message_template,
     company,
     extras
   );
 
-  console.log("DEBUG CONFIRMATION BLOCK:", {
-    companyId,
-    appointment_id: appointment.id,
-    status: appointment.status,
-    client_name: appointment.client_name,
-    client_phone: appointment.client_phone,
-    start_at: appointment.start_at,
-    minutesDiff,
-    content,
-  });
+console.log("DEBUG CONFIRMATION BLOCK:", {
+  companyId,
+  appointment_id: appointment.id,
+  client_id: appointment.client_id || null,
+  professional_id: appointment.professional_id || null,
+  service_id: appointment.service_id || null,
+  status: appointment.status,
+  client_name: appointment.client_name,
+  client_phone: appointment.client_phone,
+  professional_name: appointment.professional_name,
+  service_title: appointment.service_title,
+  start_at: appointment.start_at,
+  created_at: appointment.created_at || null,
+  updated_at: appointment.updated_at || null,
+  minutesDiff,
+  appointmentChangedRecently,
+  content,
+});
 
   const dispatch = await reserveAutomationDispatch({
     companyId,
