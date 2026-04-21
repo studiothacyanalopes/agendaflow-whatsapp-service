@@ -1997,16 +1997,8 @@ async function runAutomationWorker() {
 async function setupIncomingMessageHandler(client, companyId) {
   client.on("message", async (message) => {
     try {
-      const from = String(message.from || "").trim();
-
-      if (!from) return;
+      if (!message.from || message.from.includes("@g.us")) return;
       if (message.fromMe) return;
-      if (from.includes("@g.us")) return;
-      if (from === "status@broadcast") return;
-      if (from.includes("@broadcast")) return;
-      if (from.includes("@newsletter")) return;
-      if (from.includes("@call")) return;
-      if (from.includes("@lid")) return;
 
       const originalText = String(message.body || "").trim();
       const text = normalizeText(originalText);
