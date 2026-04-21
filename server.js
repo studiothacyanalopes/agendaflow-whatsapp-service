@@ -3,6 +3,8 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const QRCode = require("qrcode");
+const fs = require("fs");
+const path = require("path");
 const { Client, LocalAuth } = require("whatsapp-web.js");
 const { createClient } = require("@supabase/supabase-js");
 
@@ -77,6 +79,24 @@ let automationWorkerRunning = false;
 
 function getClientSessionKey(companyId) {
   return `company-${companyId}`;
+}
+
+function getClientAuthPath(companyId) {
+  const sessionKey = getClientSessionKey(companyId);
+  return path.join(".wwebjs_auth", `session-${sessionKey}`);
+}
+
+async function clearClientSessionFiles(companyId) {
+  try {
+    const authPath = getClientAuthPath(companyId);
+
+    if (fs.existsSync(authPath)) {
+      fs.rmSync(authPath, { recursive: true, force: true });
+      console.log(`Sessão local removida para ${companyId}: ${authPath}`);
+    }
+  } catch (error) {
+    console.error(`Erro ao limpar sessão local de ${companyId}:`, error);
+  }
 }
 
 function getConversationKey(companyId, phone) {
@@ -539,6 +559,10 @@ async function waitForClientReady(client, timeoutMs = 20000) {
 
     setTimeout(() => done(!!client.info?.wid?.user), timeoutMs);
   });
+}
+
+function isClientReallyReady(client) {
+  return !!client?.info?.wid?.user;
 }
 
 async function getCompanyContext(companyId) {
@@ -2114,16 +2138,42 @@ async function setupIncomingMessageHandler(client, companyId) {
 }
 
 
-async function createWhatsappClient(companyId) {
+async function createWhatsappClient(companyId, options = {}) {
   const sessionKey = getClientSessionKey(companyId);
+  const forceReset = options?.forceReset === true;
 
-  if (clients.has(sessionKey)) {
-    return clients.get(sessionKey);
+  const existingClient = clients.get(sessionKey);
+
+  if (existingClient && isClientReallyReady(existingClient) && !forceReset) {
+    console.log(`Cliente já pronto em memória para ${companyId}`);
+    return existingClient;
   }
 
-  if (initializingClients.has(sessionKey)) {
+  if (initializingClients.has(sessionKey) && !forceReset) {
     console.log(`Sessão já está inicializando: ${companyId}`);
-    return null;
+    return clients.get(sessionKey) || null;
+  }
+
+  if (forceReset) {
+    try {
+      if (existingClient) {
+        await existingClient.destroy().catch(() => null);
+      }
+    } catch (error) {
+      console.error(`Erro ao destruir client antigo de ${companyId}:`, error);
+    }
+
+    clients.delete(sessionKey);
+    initializingClients.delete(sessionKey);
+
+    await clearClientSessionFiles(companyId);
+
+    await upsertConnection(companyId, {
+      status: "disconnected",
+      phone: null,
+      qr_code: null,
+      last_disconnected_at: new Date().toISOString(),
+    });
   }
 
   initializingClients.add(sessionKey);
@@ -2140,17 +2190,21 @@ async function createWhatsappClient(companyId) {
   });
 
   client.on("qr", async (qr) => {
-    const qrCodeDataUrl = await QRCode.toDataURL(qr);
+    try {
+      const qrCodeDataUrl = await QRCode.toDataURL(qr);
 
-    await upsertConnection(companyId, {
-      status: "disconnected",
-      phone: null,
-      qr_code: qrCodeDataUrl,
-      last_connected_at: null,
-      last_disconnected_at: null,
-    });
+      await upsertConnection(companyId, {
+        status: "disconnected",
+        phone: null,
+        qr_code: qrCodeDataUrl,
+        last_connected_at: null,
+        last_disconnected_at: null,
+      });
 
-    console.log(`QR gerado para ${companyId}`);
+      console.log(`QR gerado para ${companyId}`);
+    } catch (error) {
+      console.error(`Erro ao gerar QR para ${companyId}:`, error);
+    }
   });
 
   client.on("authenticated", async () => {
@@ -2172,7 +2226,9 @@ async function createWhatsappClient(companyId) {
     console.log(`Cliente pronto: ${companyId}`);
   });
 
-  client.on("disconnected", async () => {
+  client.on("auth_failure", async (message) => {
+    console.error(`Falha de autenticação ${companyId}:`, message);
+
     await upsertConnection(companyId, {
       status: "disconnected",
       phone: null,
@@ -2182,7 +2238,19 @@ async function createWhatsappClient(companyId) {
 
     clients.delete(sessionKey);
     initializingClients.delete(sessionKey);
-    console.log(`Cliente desconectado: ${companyId}`);
+  });
+
+  client.on("disconnected", async (reason) => {
+    await upsertConnection(companyId, {
+      status: "disconnected",
+      phone: null,
+      qr_code: null,
+      last_disconnected_at: new Date().toISOString(),
+    });
+
+    clients.delete(sessionKey);
+    initializingClients.delete(sessionKey);
+    console.log(`Cliente desconectado: ${companyId}`, reason || "");
   });
 
   await setupIncomingMessageHandler(client, companyId);
@@ -2193,6 +2261,7 @@ async function createWhatsappClient(companyId) {
     console.log("INICIANDO CLIENTE WHATSAPP:", {
       companyId,
       sessionKey,
+      forceReset,
     });
 
     await client.initialize();
@@ -2200,6 +2269,7 @@ async function createWhatsappClient(companyId) {
     console.log("CLIENTE INITIALIZE CHAMADO COM SUCESSO:", {
       companyId,
       sessionKey,
+      forceReset,
     });
 
     return client;
@@ -2211,9 +2281,8 @@ async function createWhatsappClient(companyId) {
 
     if (message.includes("The browser is already running")) {
       console.error(
-        `Sessão já está em uso por outro processo para ${companyId}. Feche o processo/Chrome anterior ou limpe a sessão travada.`
+        `Sessão já está em uso por outro processo para ${companyId}.`
       );
-
       return null;
     }
 
@@ -2261,19 +2330,53 @@ async function restoreConnectedSessions() {
 app.post("/connect/:companyId", async (req, res) => {
   try {
     const { companyId } = req.params;
+    const sessionKey = getClientSessionKey(companyId);
+    const existingClient = clients.get(sessionKey);
 
     console.log("CONNECT REQUEST RECEBIDO:", { companyId });
+
+    if (existingClient && isClientReallyReady(existingClient)) {
+      console.log("CONNECT REQUEST RESULTADO:", {
+        companyId,
+        hasClient: true,
+        alreadyReady: true,
+      });
+
+      return res.json({
+        success: true,
+        connected: true,
+        message: "Sessão já conectada.",
+      });
+    }
+
+    if (initializingClients.has(sessionKey)) {
+      console.log("CONNECT REQUEST RESULTADO:", {
+        companyId,
+        hasClient: true,
+        initializing: true,
+      });
+
+      return res.json({
+        success: true,
+        initializing: true,
+        message: "Sessão já está inicializando. Aguarde o QR ou autenticação.",
+      });
+    }
 
     const client = await createWhatsappClient(companyId);
 
     console.log("CONNECT REQUEST RESULTADO:", {
       companyId,
       hasClient: !!client,
+      ready: isClientReallyReady(client),
     });
 
     return res.json({
-      success: true,
-      message: "Inicialização da sessão iniciada.",
+      success: !!client,
+      connected: isClientReallyReady(client),
+      message: client
+        ? "Inicialização da sessão iniciada."
+        : "Não foi possível iniciar a sessão agora.",
     });
   } catch (error) {
     console.error("ERRO /connect:", error);
@@ -2292,9 +2395,11 @@ app.post("/disconnect/:companyId", async (req, res) => {
     const client = clients.get(sessionKey);
 
     if (client) {
-      await client.destroy();
-      clients.delete(sessionKey);
+      await client.destroy().catch(() => null);
     }
+
+    clients.delete(sessionKey);
+    initializingClients.delete(sessionKey);
 
     await upsertConnection(companyId, {
       status: "disconnected",
@@ -2312,6 +2417,48 @@ app.post("/disconnect/:companyId", async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Erro ao desconectar sessão.",
+    });
+  }
+});
+
+app.post("/reset/:companyId", async (req, res) => {
+  try {
+    const { companyId } = req.params;
+    const sessionKey = getClientSessionKey(companyId);
+    const existingClient = clients.get(sessionKey);
+
+    if (existingClient) {
+      await existingClient.destroy().catch(() => null);
+    }
+
+    clients.delete(sessionKey);
+    initializingClients.delete(sessionKey);
+
+    await clearClientSessionFiles(companyId);
+
+    await upsertConnection(companyId, {
+      status: "disconnected",
+      phone: null,
+      qr_code: null,
+      last_disconnected_at: new Date().toISOString(),
+    });
+
+    const freshClient = await createWhatsappClient(companyId, {
+      forceReset: false,
+    });
+
+    return res.json({
+      success: !!freshClient,
+      message: freshClient
+        ? "Sessão resetada e reiniciada com sucesso."
+        : "Sessão resetada, mas não foi possível iniciar o cliente agora.",
+    });
+  } catch (error) {
+    console.error("ERRO /reset:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Erro ao resetar sessão do WhatsApp.",
     });
   }
 });
