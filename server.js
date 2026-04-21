@@ -2144,6 +2144,17 @@ async function createWhatsappClient(companyId, options = {}) {
 
   const existingClient = clients.get(sessionKey);
 
+    const pairWithPhoneNumber = options?.pairWithPhoneNumber?.phoneNumber
+    ? {
+        phoneNumber: normalizeWhatsappPhoneForBrazil(
+          options.pairWithPhoneNumber.phoneNumber
+        ),
+        showNotification:
+          options?.pairWithPhoneNumber?.showNotification !== false,
+        intervalMs: Number(options?.pairWithPhoneNumber?.intervalMs || 180000),
+      }
+    : null;
+
   if (existingClient && isClientReallyReady(existingClient) && !forceReset) {
     console.log(`Cliente já pronto em memória para ${companyId}`);
     return existingClient;
@@ -2187,6 +2198,11 @@ async function createWhatsappClient(companyId, options = {}) {
       headless: true,
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
     },
+    ...(pairWithPhoneNumber
+      ? {
+          pairWithPhoneNumber,
+        }
+      : {}),
   });
 
   client.on("qr", async (qr) => {
@@ -2327,22 +2343,24 @@ async function restoreConnectedSessions() {
 }
 
 async function requestPhonePairingCode(companyId, phone) {
-  const sessionKey = getClientSessionKey(companyId);
-  let client = clients.get(sessionKey);
+  const normalizedPhone = normalizeWhatsappPhoneForBrazil(phone);
 
   if (!phone) {
     throw new Error("Telefone é obrigatório para gerar o código.");
   }
 
-  const normalizedPhone = normalizeWhatsappPhoneForBrazil(phone);
-
   if (!normalizedPhone) {
     throw new Error("Telefone inválido.");
   }
 
-  if (!client) {
-    client = await createWhatsappClient(companyId);
-  }
+  const client = await createWhatsappClient(companyId, {
+    forceReset: true,
+    pairWithPhoneNumber: {
+      phoneNumber: normalizedPhone,
+      showNotification: true,
+      intervalMs: 180000,
+    },
+  });
 
   if (!client) {
     throw new Error("Não foi possível iniciar a sessão do WhatsApp.");
@@ -2354,7 +2372,7 @@ async function requestPhonePairingCode(companyId, phone) {
     );
   }
 
-  const ready = await waitForClientReady(client, 8000);
+  const ready = await waitForClientReady(client, 3000);
 
   if (ready && isClientReallyReady(client)) {
     return {
