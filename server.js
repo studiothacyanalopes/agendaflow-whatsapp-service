@@ -2004,7 +2004,6 @@ async function setupIncomingMessageHandler(client, companyId) {
       if (message.fromMe) return;
       if (from.includes("@g.us")) return;
       if (from === "status@broadcast") return;
-      if (from.includes("@broadcast")) return;
 
       const originalText = String(message.body || "").trim();
       const text = normalizeText(originalText);
