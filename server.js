@@ -2326,6 +2326,89 @@ async function restoreConnectedSessions() {
   }
 }
 
+async function requestPhonePairingCode(companyId, phone) {
+  const sessionKey = getClientSessionKey(companyId);
+  let client = clients.get(sessionKey);
+
+  if (!phone) {
+    throw new Error("Telefone é obrigatório para gerar o código.");
+  }
+
+  const normalizedPhone = normalizeWhatsappPhoneForBrazil(phone);
+
+  if (!normalizedPhone) {
+    throw new Error("Telefone inválido.");
+  }
+
+  if (!client) {
+    client = await createWhatsappClient(companyId);
+  }
+
+  if (!client) {
+    throw new Error("Não foi possível iniciar a sessão do WhatsApp.");
+  }
+
+  if (typeof client.requestPairingCode !== "function") {
+    throw new Error(
+      "A versão atual do whatsapp-web.js não suporta conexão por número."
+    );
+  }
+
+  const ready = await waitForClientReady(client, 8000);
+
+  if (ready && isClientReallyReady(client)) {
+    return {
+      connected: true,
+      pairingCode: null,
+      phone: normalizedPhone,
+    };
+  }
+
+  const pairingCode = await client.requestPairingCode(normalizedPhone);
+
+  await upsertConnection(companyId, {
+    status: "connecting",
+    phone: normalizedPhone,
+    qr_code: null,
+    last_disconnected_at: null,
+  });
+
+  return {
+    connected: false,
+    pairingCode,
+    phone: normalizedPhone,
+  };
+}
+
+
+app.post("/connect-phone/:companyId", async (req, res) => {
+  try {
+    const { companyId } = req.params;
+    const { phone } = req.body || {};
+
+    console.log("CONNECT PHONE REQUEST RECEBIDO:", { companyId, phone });
+
+    const result = await requestPhonePairingCode(companyId, phone);
+
+    return res.json({
+      success: true,
+      connected: result.connected,
+      pairingCode: result.pairingCode,
+      phone: result.phone,
+      message: result.connected
+        ? "Sessão já conectada."
+        : "Código de conexão gerado com sucesso.",
+    });
+  } catch (error) {
+    console.error("ERRO /connect-phone:", error);
+
+    return res.status(500).json({
+      success: false,
+      message:
+        error?.message || "Erro ao gerar código de conexão por telefone.",
+    });
+  }
+});
 
 app.post("/connect/:companyId", async (req, res) => {
   try {
